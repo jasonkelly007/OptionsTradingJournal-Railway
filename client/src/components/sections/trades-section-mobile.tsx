@@ -26,7 +26,8 @@ const tradeFormSchema = z.object({
   quantity: z.coerce.number().min(1, "Quantity must be at least 1"),
   strikePrice: z.coerce.number().min(0, "Strike price must be positive"),
   entryPrice: z.coerce.number().min(0, "Entry price must be positive"),
-  exitPrice: z.coerce.number().min(0, "Exit price must be positive"),
+  isOpen: z.boolean().default(false),
+  exitPrice: z.coerce.number().min(0, "Exit price must be positive").optional(),
   entryTime: z.string().min(1, "Entry time is required"),
   exitTime: z.string().optional(),
   expirationDate: z.string().min(1, "Expiration date is required"),
@@ -42,9 +43,18 @@ interface TradesSectionProps {
   onNavigateToAnalysis?: (tradeId: number, section?: 'analysis' | 'edit') => void;
 }
 
+// Close trade form state
+interface CloseFormState {
+  closePrice: string;
+  closeTime: string;
+  exitReason: string;
+}
+
 export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSectionProps = {}) {
   const [showForm, setShowForm] = useState(false);
   const [editingTrade, setEditingTrade] = useState<Trade | null>(null);
+  const [closingTrade, setClosingTrade] = useState<Trade | null>(null);
+  const [closeFormState, setCloseFormState] = useState<CloseFormState>({ closePrice: '', closeTime: '', exitReason: '' });
   const [entrySource, setEntrySource] = useState<"playbook" | "custom">("playbook");
   const [showBulkUpload, setShowBulkUpload] = useState(false);
   const { toast } = useToast();
@@ -71,6 +81,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
       quantity: 1,
       strikePrice: undefined,
       entryPrice: undefined,
+      isOpen: false,
       exitPrice: undefined,
       entryTime: getCurrentCSTTime(),
       exitTime: "",
@@ -113,14 +124,15 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
         quantity: data.quantity,
         strikePrice: data.strikePrice,
         entryPrice: data.entryPrice,
-        exitPrice: data.exitPrice,
+        exitPrice: data.isOpen ? null : (data.exitPrice ?? null),
         entryTime: new Date(`${data.tradeDate} ${data.entryTime}`),
-        exitTime: data.exitTime ? new Date(`${data.tradeDate} ${data.exitTime}`) : null,
+        exitTime: data.isOpen || !data.exitTime ? null : new Date(`${data.tradeDate} ${data.exitTime}`),
         expirationDate: normalizedExpirationDate,
         entryReason: data.entryReason,
         exitReason: data.exitReason,
         playbookId: data.playbookId,
         tradeDate: normalizedTradeDate,
+        // status is computed server-side from exitPrice presence
       };
       
       return apiRequest('/api/trades', 'POST', tradeData);
@@ -180,9 +192,9 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
         quantity: data.quantity,
         strikePrice: data.strikePrice,
         entryPrice: data.entryPrice,
-        exitPrice: data.exitPrice,
+        exitPrice: data.isOpen ? null : (data.exitPrice ?? null),
         entryTime: new Date(`${data.tradeDate} ${data.entryTime}`),
-        exitTime: data.exitTime ? new Date(`${data.tradeDate} ${data.exitTime}`) : null,
+        exitTime: data.isOpen || !data.exitTime ? null : new Date(`${data.tradeDate} ${data.exitTime}`),
         expirationDate: normalizedExpirationDate,
         entryReason: data.entryReason,
         exitReason: data.exitReason,
@@ -257,11 +269,36 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
     }
   };
 
+  // Close trade mutation (sets exitPrice/time on an open trade)
+  const closeTradeMutation = useMutation({
+    mutationFn: async ({ tradeId, closePrice, closeTime, exitReason }: { tradeId: number; closePrice: number; closeTime: string; exitReason: string }) => {
+      const trade = trades.find(t => t.id === tradeId);
+      if (!trade) throw new Error('Trade not found');
+      const tradeDateStr = new Date(trade.tradeDate).toISOString().split('T')[0];
+      return apiRequest(`/api/trades/${tradeId}`, 'PATCH', {
+        exitPrice: closePrice,
+        exitTime: closeTime ? new Date(`${tradeDateStr} ${closeTime}`) : new Date(),
+        exitReason,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/trades'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/performance/analytics'] });
+      setClosingTrade(null);
+      setCloseFormState({ closePrice: '', closeTime: '', exitReason: '' });
+      toast({ title: "Trade Closed", description: "Position closed and P&L recorded." });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to close trade.", variant: "destructive" });
+    },
+  });
+
   const handleEditTrade = (trade: Trade) => {
     const entryTime = new Date(trade.entryTime);
     const exitTime = trade.exitTime ? new Date(trade.exitTime) : null;
     const expirationDate = new Date(trade.expirationDate);
     const tradeDate = new Date(trade.tradeDate);
+    const isOpen = !trade.exitPrice;
 
     form.reset({
       ticker: trade.ticker,
@@ -269,13 +306,14 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
       quantity: trade.quantity,
       strikePrice: trade.strikePrice,
       entryPrice: trade.entryPrice,
+      isOpen,
       exitPrice: trade.exitPrice || undefined,
       entryTime: entryTime.toTimeString().split(' ')[0].substring(0, 5),
       exitTime: exitTime ? exitTime.toTimeString().split(' ')[0].substring(0, 5) : "",
       expirationDate: expirationDate.toISOString().split('T')[0],
       entryReason: trade.entryReason || "",
       exitReason: trade.exitReason || "",
-      playbookId: trade.playbookId || 1,
+      playbookId: trade.playbookId || undefined,
       tradeDate: tradeDate.toISOString().split('T')[0],
     });
 
@@ -292,6 +330,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
       quantity: 1,
       strikePrice: undefined,
       entryPrice: undefined,
+      isOpen: false,
       exitPrice: undefined,
       entryTime: getCurrentCSTTime(),
       exitTime: "",
@@ -303,7 +342,8 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
   };
 
   const watchedValues = form.watch();
-  const calculatedPnL = watchedValues.exitPrice && watchedValues.entryPrice && watchedValues.quantity
+  const isOpenWatch = form.watch('isOpen');
+  const calculatedPnL = !isOpenWatch && watchedValues.exitPrice && watchedValues.entryPrice && watchedValues.quantity
     ? calculateOptionsPnL(watchedValues.entryPrice, watchedValues.exitPrice, watchedValues.quantity)
     : null;
 
@@ -478,26 +518,54 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                     )}
                   />
 
+                  {/* Trade Status Toggle */}
                   <FormField
                     control={form.control}
-                    name="exitPrice"
+                    name="isOpen"
                     render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Exit Price</FormLabel>
+                      <FormItem className="flex flex-row items-center gap-3 rounded-lg border border-border p-3 bg-muted/30">
                         <FormControl>
-                          <Input 
-                            type="number" 
-                            step="0.01" 
-                            {...field}
-                            value={field.value || ""}
-                            onChange={(e) => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))}
-                            placeholder="Enter exit price"
+                          <input
+                            type="checkbox"
+                            checked={field.value}
+                            onChange={field.onChange}
+                            className="h-4 w-4 accent-primary"
+                            id="isOpen"
                           />
                         </FormControl>
-                        <FormMessage />
+                        <div>
+                          <label htmlFor="isOpen" className="text-sm font-medium cursor-pointer">
+                            Trade is still open (no exit yet)
+                          </label>
+                          <p className="text-xs text-muted-foreground">Check this if you haven't closed the position yet</p>
+                        </div>
                       </FormItem>
                     )}
                   />
+
+                  {/* Exit Price — only shown when trade is closed */}
+                  {!isOpenWatch && (
+                    <FormField
+                      control={form.control}
+                      name="exitPrice"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Exit Price</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              {...field}
+                              value={field.value || ""}
+                              onChange={(e) => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))}
+                              placeholder="Enter exit price"
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
 
                   <FormField
                     control={form.control}
@@ -527,19 +595,22 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                     )}
                   />
 
-                  <FormField
-                    control={form.control}
-                    name="exitTime"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Exit Time (Optional)</FormLabel>
-                        <FormControl>
-                          <Input type="time" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  {/* Exit Time — only shown when trade is closed */}
+                  {!isOpenWatch && (
+                    <FormField
+                      control={form.control}
+                      name="exitTime"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Exit Time (Optional)</FormLabel>
+                          <FormControl>
+                            <Input type="time" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
                 </div>
 
                 {/* Strategy Selection */}
@@ -708,34 +779,51 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
           <div className="space-y-3">
             {sortedTrades.map((trade) => {
               const strategy = strategies.find(s => s.id === trade.playbookId);
-              const pnl = trade.pnl || 0;
-              
+              const pnl = trade.pnl;
+              const isOpen = trade.status === 'open' || (!trade.exitPrice && !trade.pnl);
+              const isClosingThis = closingTrade?.id === trade.id;
+
               return (
                 <Card key={trade.id} className="w-full">
                   <CardContent className="p-4">
                     <div className="space-y-3">
                       {/* Header Row */}
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-semibold text-lg">{trade.ticker}</span>
                           <Badge variant={trade.type === 'calls' ? 'default' : 'secondary'}>
                             {trade.type.toUpperCase()}
                           </Badge>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {pnl !== 0 && (
-                            <div className={`flex items-center gap-1 ${pnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                              {pnl >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
-                              <span className="font-semibold">
+                          {isOpen ? (
+                            <Badge className="bg-emerald-600 text-white hover:bg-emerald-700 text-xs">OPEN</Badge>
+                          ) : (
+                            pnl !== null && pnl !== undefined && (
+                              <div className={`flex items-center gap-1 font-semibold text-sm ${pnl >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                                {pnl >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
                                 {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
-                              </span>
-                            </div>
+                              </div>
+                            )
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {isOpen && !isClosingThis && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setClosingTrade(trade);
+                                setCloseFormState({ closePrice: '', closeTime: getCurrentCSTTime(), exitReason: '' });
+                              }}
+                              className="text-emerald-600 border-emerald-600 hover:bg-emerald-50 text-xs px-2 h-7"
+                            >
+                              Close Trade
+                            </Button>
                           )}
                           <Button
                             variant="ghost"
                             size="sm"
                             onClick={() => handleEditTrade(trade)}
-                            className="text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                            className="text-blue-400 hover:text-blue-300 hover:bg-blue-900/30 h-7 w-7 p-0"
                           >
                             <Edit className="w-4 h-4" />
                           </Button>
@@ -744,35 +832,98 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                             size="sm"
                             onClick={() => deleteTradeMutation.mutate(trade.id)}
                             disabled={deleteTradeMutation.isPending}
-                            className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                            className="text-red-400 hover:text-red-300 hover:bg-red-900/30 h-7 w-7 p-0"
                           >
                             <Trash2 className="w-4 h-4" />
                           </Button>
                         </div>
                       </div>
 
+                      {/* Close Trade Inline Form */}
+                      {isClosingThis && (
+                        <div className="border border-emerald-700 rounded-lg p-3 bg-emerald-950/30 space-y-3">
+                          <p className="text-sm font-medium text-emerald-400">Close Position — {trade.ticker} {trade.type.toUpperCase()}</p>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <Label className="text-xs text-muted-foreground mb-1 block">Close Price</Label>
+                              <Input
+                                type="number"
+                                step="0.01"
+                                placeholder="e.g. 0.10"
+                                value={closeFormState.closePrice}
+                                onChange={e => setCloseFormState(s => ({ ...s, closePrice: e.target.value }))}
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-xs text-muted-foreground mb-1 block">Close Time</Label>
+                              <Input
+                                type="time"
+                                value={closeFormState.closeTime}
+                                onChange={e => setCloseFormState(s => ({ ...s, closeTime: e.target.value }))}
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <Label className="text-xs text-muted-foreground mb-1 block">Exit Reason (optional)</Label>
+                            <Input
+                              placeholder="Why did you close?"
+                              value={closeFormState.exitReason}
+                              onChange={e => setCloseFormState(s => ({ ...s, exitReason: e.target.value }))}
+                            />
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="flex-1"
+                              onClick={() => { setClosingTrade(null); setCloseFormState({ closePrice: '', closeTime: '', exitReason: '' }); }}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              size="sm"
+                              className="flex-1 bg-emerald-600 hover:bg-emerald-700"
+                              disabled={!closeFormState.closePrice || closeTradeMutation.isPending}
+                              onClick={() => {
+                                if (!closeFormState.closePrice) return;
+                                closeTradeMutation.mutate({
+                                  tradeId: trade.id,
+                                  closePrice: parseFloat(closeFormState.closePrice),
+                                  closeTime: closeFormState.closeTime,
+                                  exitReason: closeFormState.exitReason,
+                                });
+                              }}
+                            >
+                              {closeTradeMutation.isPending ? 'Closing...' : 'Confirm Close'}
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Trade Details */}
-                      <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
                         <div>
-                          <div className="text-muted-foreground">Strike</div>
-                          <div className="font-medium">${trade.strikePrice}</div>
+                          <span className="text-muted-foreground">Strike: </span>
+                          <span className="font-medium">${trade.strikePrice}</span>
                         </div>
                         <div>
-                          <div className="text-muted-foreground">Quantity</div>
-                          <div className="font-medium">{trade.quantity}</div>
+                          <span className="text-muted-foreground">Qty: </span>
+                          <span className="font-medium">{trade.quantity}</span>
                         </div>
                         <div>
-                          <div className="text-muted-foreground">Entry</div>
-                          <div className="font-medium">${trade.entryPrice}</div>
+                          <span className="text-muted-foreground">Entry: </span>
+                          <span className="font-medium">${trade.entryPrice}</span>
                         </div>
-                        <div>
-                          <div className="text-muted-foreground">Exit</div>
-                          <div className="font-medium">${trade.exitPrice}</div>
-                        </div>
+                        {!isOpen && trade.exitPrice && (
+                          <div>
+                            <span className="text-muted-foreground">Exit: </span>
+                            <span className="font-medium">${trade.exitPrice}</span>
+                          </div>
+                        )}
                       </div>
 
                       {/* Time Information */}
-                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                      <div className="flex items-center gap-4 text-xs text-muted-foreground">
                         <div className="flex items-center gap-1">
                           <Clock className="w-3 h-3" />
                           <span>{format(new Date(trade.tradeDate), 'MMM dd')}</span>
@@ -780,9 +931,12 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                         <div>
                           {format(new Date(trade.entryTime), 'HH:mm')}
                           {trade.exitTime && (
-                            <> - {format(new Date(trade.exitTime), 'HH:mm')}</>
+                            <> → {format(new Date(trade.exitTime), 'HH:mm')}</>
                           )}
                         </div>
+                        {trade.timeClassification && (
+                          <span className="text-primary text-xs">{trade.timeClassification}</span>
+                        )}
                       </div>
 
                       {/* Strategy */}
@@ -794,12 +948,13 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                       )}
 
                       {/* Analysis Link */}
-                      {onNavigateToAnalysis && (
+                      {onNavigateToAnalysis && !isOpen && (
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => onNavigateToAnalysis(trade.id, 'analysis')}
                           className="w-full"
+
                         >
                           <ChartLine className="w-4 h-4 mr-2" />
                           Analyze Trade

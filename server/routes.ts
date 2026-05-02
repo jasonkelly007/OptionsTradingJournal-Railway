@@ -8,6 +8,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Session middleware
   app.use(getSession());
 
+  // ─── Helper: Compute server-side trade fields ───────────────────────────────
+  function classifyTime(entryTime: Date | string): string {
+    const d = new Date(entryTime);
+    const minutes = d.getHours() * 60 + d.getMinutes();
+    if (minutes >= 510 && minutes <= 570) return "Cash Open";
+    if (minutes >= 571 && minutes <= 630) return "Euro Close";
+    if (minutes >= 870 && minutes <= 900) return "Power Hour";
+    return "Other";
+  }
+
+  function enrichTrade(data: any) {
+    const hasExit = data.exitPrice !== null && data.exitPrice !== undefined;
+    const pnl = hasExit
+      ? parseFloat(
+          ((data.exitPrice - data.entryPrice) * data.quantity * 100).toFixed(2)
+        )
+      : null;
+    const timeClassification = data.entryTime
+      ? classifyTime(data.entryTime)
+      : null;
+    // Server always owns status — override client value
+    const status = hasExit ? "closed" : "open";
+    return { ...data, pnl, timeClassification, status };
+  }
+  // ────────────────────────────────────────────────────────────────────────────
+
   // Authentication routes (public)
   app.post("/api/auth/login", login);
   app.post("/api/auth/logout", logout);
@@ -49,7 +75,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/trades", async (req, res) => {
     try {
-      const validatedData = insertTradeSchema.parse(req.body);
+      const parsed = insertTradeSchema.parse(req.body);
+      const validatedData = enrichTrade(parsed);
       const trade = await storage.createTrade(validatedData);
       res.status(201).json(trade);
     } catch (error) {
@@ -60,16 +87,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch("/api/trades/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
-      const updateData = insertTradeSchema.partial().parse(req.body);
-      const trade = await storage.updateTrade(id, updateData);
-      if (!trade) {
+      const parsed = insertTradeSchema.partial().parse(req.body);
+      // Fetch existing trade to merge for enrichment calculation
+      const existing = await storage.getTrade(id);
+      if (!existing) {
         return res.status(404).json({ message: "Trade not found" });
       }
+      const merged = { ...existing, ...parsed };
+      const enriched = enrichTrade(merged);
+      const trade = await storage.updateTrade(id, enriched);
       res.json(trade);
     } catch (error) {
       res.status(400).json({ message: "Invalid update data", error });
     }
   });
+
 
   app.delete("/api/trades/:id", async (req, res) => {
     try {

@@ -37,8 +37,10 @@ export const trades = pgTable("trades", {
   playbookId: integer("playbook_id"),
   timeClassification: text("time_classification"), // 'Cash Open', 'Euro Close', 'Power Hour', 'Other'
   tradeDate: timestamp("trade_date").notNull(),
+  status: text("status").default("closed"), // 'open' | 'closed' | 'rolled'
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
 
 export const premarketAnalysis = pgTable("premarket_analysis", {
   id: serial("id").primaryKey(),
@@ -148,14 +150,16 @@ export const insertTradeSchema = createInsertSchema(trades).omit({
   createdAt: true,
 }).extend({
   entryTime: z.coerce.date(),
-  exitTime: z.coerce.date().optional(),
+  exitTime: z.coerce.date().optional().nullable(),
   expirationDate: z.coerce.date(),
   tradeDate: z.coerce.date(),
-  pnl: z.coerce.number().optional(),
-  exitPrice: z.coerce.number().optional(),
-  playbookId: z.coerce.number().optional(),
+  pnl: z.coerce.number().optional().nullable(),
+  exitPrice: z.coerce.number().optional().nullable(),
+  playbookId: z.coerce.number().optional().nullable(),
   usePlaybook: z.boolean().optional(),
+  status: z.enum(["open", "closed", "rolled"]).optional().default("closed"),
 });
+
 
 export const insertPremarketAnalysisSchema = createInsertSchema(premarketAnalysis).omit({
   id: true,
