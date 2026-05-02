@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -12,7 +12,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Plus, ChartLine, Edit, Trash2, Clock, TrendingUp, TrendingDown, Upload } from "lucide-react";
+import { Plus, ChartLine, Edit, Trash2, Clock, TrendingUp, TrendingDown, Upload, ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { calculateTradePnL, classifyTimeOfDay } from "@/lib/trade-calculations";
@@ -52,11 +52,25 @@ interface CloseFormState {
   exitReason: string;
 }
 
+interface RollFormState {
+  buybackPrice: string;
+  buybackTime: string;
+  newStrike: string;
+  newExpiration: string;
+  newPremium: string;
+  newEntryTime: string;
+}
+
 export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSectionProps = {}) {
   const [showForm, setShowForm] = useState(false);
   const [editingTrade, setEditingTrade] = useState<Trade | null>(null);
   const [closingTrade, setClosingTrade] = useState<Trade | null>(null);
   const [closeFormState, setCloseFormState] = useState<CloseFormState>({ closePrice: '', closeTime: '', exitReason: '' });
+  const [rollingTrade, setRollingTrade] = useState<Trade | null>(null);
+  const [rollFormState, setRollFormState] = useState<RollFormState>({
+    buybackPrice: '', buybackTime: '', newStrike: '', newExpiration: '', newPremium: '', newEntryTime: ''
+  });
+  const [expandedCampaigns, setExpandedCampaigns] = useState<Set<string>>(new Set());
   const [entrySource, setEntrySource] = useState<"playbook" | "custom">("playbook");
   const [showBulkUpload, setShowBulkUpload] = useState(false);
   const { toast } = useToast();
@@ -298,6 +312,30 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
     },
   });
 
+  // Roll trade mutation — closes current leg as 'rolled', opens a new leg
+  const rollTradeMutation = useMutation({
+    mutationFn: async ({ tradeId, form }: { tradeId: number; form: RollFormState }) => {
+      return apiRequest(`/api/trades/${tradeId}/roll`, 'POST', {
+        buybackPrice: form.buybackPrice,
+        buybackTime: form.buybackTime,
+        newStrike: form.newStrike,
+        newExpiration: form.newExpiration,
+        newPremium: form.newPremium,
+        newEntryTime: form.newEntryTime,
+      });
+    },
+    onSuccess: (_data, { tradeId }) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/trades'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/performance/analytics'] });
+      setRollingTrade(null);
+      setRollFormState({ buybackPrice: '', buybackTime: getCurrentCSTTime(), newStrike: '', newExpiration: getCurrentCSTDate(), newPremium: '', newEntryTime: getCurrentCSTTime() });
+      toast({ title: "Trade Rolled", description: "Previous leg closed, new leg opened." });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to roll trade.", variant: "destructive" });
+    },
+  });
+
   const handleEditTrade = (trade: Trade) => {
     const entryTime = new Date(trade.entryTime);
     const exitTime = trade.exitTime ? new Date(trade.exitTime) : null;
@@ -364,6 +402,46 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
   const sortedTrades = [...trades].sort((a, b) => 
     new Date(b.tradeDate).getTime() - new Date(a.tradeDate).getTime()
   );
+
+  // Group trades: campaigns (linked by campaignId) vs standalone
+  const { campaigns, standaloneTrades } = useMemo(() => {
+    const campaignMap = new Map<string, Trade[]>();
+    const standalone: Trade[] = [];
+    for (const trade of sortedTrades) {
+      const cid = (trade as any).campaignId as string | null;
+      if (cid) {
+        const arr = campaignMap.get(cid) ?? [];
+        arr.push(trade);
+        campaignMap.set(cid, arr);
+      } else {
+        standalone.push(trade);
+      }
+    }
+    const camps = Array.from(campaignMap.entries()).map(([campaignId, legs]) => {
+      const chronoLegs = [...legs].sort((a, b) => new Date(a.entryTime).getTime() - new Date(b.entryTime).getTime());
+      const openLeg = chronoLegs.find(l => l.status === 'open' || (!l.exitPrice && !l.pnl)) ?? null;
+      const realizedPnL = legs.reduce((s, l) => s + (l.pnl ?? 0), 0);
+      return {
+        campaignId,
+        legs: chronoLegs,
+        ticker: legs[0].ticker,
+        tradeType: (legs[0] as any).tradeType as string,
+        realizedPnL,
+        isActive: !!openLeg,
+        openLeg,
+        latestDate: Math.max(...legs.map(l => new Date(l.tradeDate).getTime())),
+      };
+    }).sort((a, b) => b.latestDate - a.latestDate);
+    return { campaigns: camps, standaloneTrades: standalone };
+  }, [sortedTrades]);
+
+  const toggleCampaign = (id: string) => {
+    setExpandedCampaigns(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
 
   return (
     <div className="w-full max-w-full overflow-hidden">
@@ -792,8 +870,8 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
 
       {/* Mobile-Optimized Trades List */}
       <div className="space-y-4">
-        <h3 className="text-lg font-semibold">Recent Trades</h3>
-        
+        <h3 className="text-lg font-semibold">Trade History</h3>
+
         {tradesLoading ? (
           <div className="flex items-center justify-center py-8">
             <div className="text-muted-foreground">Loading trades...</div>
@@ -802,208 +880,322 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
           <Card>
             <CardContent className="py-8 text-center">
               <div className="text-muted-foreground">No trades logged yet</div>
-              <Button 
-                onClick={() => setShowForm(true)}
-                className="mt-2"
-                variant="outline"
-              >
+              <Button onClick={() => setShowForm(true)} className="mt-2" variant="outline">
                 Add your first trade
               </Button>
             </CardContent>
           </Card>
         ) : (
-          <div className="space-y-3">
-            {sortedTrades.map((trade) => {
-              const strategy = strategies.find(s => s.id === trade.playbookId);
-              const pnl = trade.pnl;
-              const isOpen = trade.status === 'open' || (!trade.exitPrice && !trade.pnl);
-              const isClosingThis = closingTrade?.id === trade.id;
+          <div className="space-y-4">
 
-              return (
-                <Card key={trade.id} className="w-full">
-                  <CardContent className="p-4">
-                    <div className="space-y-3">
-                      {/* Header Row */}
-                      <div className="flex items-center justify-between flex-wrap gap-2">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-semibold text-lg">{trade.ticker}</span>
-                          <Badge variant={trade.type === 'calls' ? 'default' : 'secondary'}>
-                            {getTradeTypeInfo(trade.tradeType).shortLabel}
-                          </Badge>
-                          {isOpen ? (
-                            <Badge className="bg-emerald-600 text-white hover:bg-emerald-700 text-xs">OPEN</Badge>
-                          ) : (
-                            pnl !== null && pnl !== undefined && (
-                              <div className={`flex items-center gap-1 font-semibold text-sm ${pnl >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                                {pnl >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
-                                {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+            {/* ── Roll Campaigns ─────────────────────────────── */}
+            {campaigns.length > 0 && (
+              <div className="space-y-3">
+                <h4 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Roll Campaigns</h4>
+                {campaigns.map(campaign => {
+                  const isExpanded = expandedCampaigns.has(campaign.campaignId);
+                  const cfg = getTradeTypeInfo(campaign.tradeType);
+                  const isRollingCampaign = rollingTrade?.id === campaign.openLeg?.id;
+                  const isClosingCampaign = closingTrade?.id === campaign.openLeg?.id;
+                  return (
+                    <Card key={campaign.campaignId} className="border-primary/30 bg-primary/5 w-full">
+                      <CardContent className="p-4 space-y-3">
+                        {/* Campaign Header */}
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-semibold">{campaign.ticker}</span>
+                            <Badge variant="default">{cfg.shortLabel}</Badge>
+                            <Badge className={campaign.isActive ? 'bg-emerald-600 text-white' : 'bg-muted text-muted-foreground'}>
+                              {campaign.isActive ? 'ACTIVE' : 'CLOSED'}
+                            </Badge>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className={`font-bold text-sm ${campaign.realizedPnL >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                              {campaign.realizedPnL >= 0 ? '+' : ''}${campaign.realizedPnL.toFixed(2)}
+                            </span>
+                            <button onClick={() => toggleCampaign(campaign.campaignId)} className="text-muted-foreground hover:text-foreground">
+                              {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                            </button>
+                          </div>
+                        </div>
+                        <p className="text-xs text-muted-foreground">{campaign.legs.length} legs · Realized P&L shown</p>
+
+                        {/* Expanded legs */}
+                        {isExpanded && (
+                          <div className="space-y-2 border-t border-border pt-3">
+                            {campaign.legs.map((leg, idx) => {
+                              const legIsOpen = leg.status === 'open' || (!leg.exitPrice && !leg.pnl);
+                              return (
+                                <div key={leg.id} className="flex items-center justify-between text-sm p-2 rounded-md bg-muted/30">
+                                  <div>
+                                    <span className="text-xs text-muted-foreground mr-1">Leg {idx + 1}:</span>
+                                    {leg.strikePrice && <span>${leg.strikePrice}p</span>}
+                                    {leg.expirationDate && (
+                                      <span className="text-muted-foreground ml-1">exp {format(new Date(leg.expirationDate), 'M/d')}</span>
+                                    )}
+                                    <span className="text-muted-foreground ml-2">@${leg.entryPrice}</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    {leg.status === 'rolled' && <Badge className="text-xs bg-amber-600 text-white">ROLLED</Badge>}
+                                    {legIsOpen && <Badge className="text-xs bg-emerald-600 text-white">OPEN</Badge>}
+                                    {leg.pnl !== null && leg.pnl !== undefined && (
+                                      <span className={`font-medium text-xs ${leg.pnl >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                                        {leg.pnl >= 0 ? '+' : ''}${leg.pnl.toFixed(2)}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+
+                            {/* Action buttons on active leg */}
+                            {campaign.openLeg && !isClosingCampaign && !isRollingCampaign && (
+                              <div className="flex gap-2 pt-1">
+                                <Button size="sm" variant="outline"
+                                  className="flex-1 text-emerald-600 border-emerald-600 hover:bg-emerald-50 text-xs"
+                                  onClick={() => { setClosingTrade(campaign.openLeg!); setCloseFormState({ closePrice: '', closeTime: getCurrentCSTTime(), exitReason: '' }); }}>
+                                  Close Trade
+                                </Button>
+                                <Button size="sm" variant="outline"
+                                  className="flex-1 text-amber-500 border-amber-500 hover:bg-amber-50 text-xs"
+                                  onClick={() => { setRollingTrade(campaign.openLeg!); setRollFormState({ buybackPrice: '', buybackTime: getCurrentCSTTime(), newStrike: String(campaign.openLeg!.strikePrice ?? ''), newExpiration: getCurrentCSTDate(), newPremium: '', newEntryTime: getCurrentCSTTime() }); }}>
+                                  <RefreshCw className="w-3 h-3 mr-1" /> Roll
+                                </Button>
                               </div>
-                            )
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1">
-                          {isOpen && !isClosingThis && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
-                                setClosingTrade(trade);
-                                setCloseFormState({ closePrice: '', closeTime: getCurrentCSTTime(), exitReason: '' });
-                              }}
-                              className="text-emerald-600 border-emerald-600 hover:bg-emerald-50 text-xs px-2 h-7"
-                            >
-                              Close Trade
-                            </Button>
-                          )}
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleEditTrade(trade)}
-                            className="text-blue-400 hover:text-blue-300 hover:bg-blue-900/30 h-7 w-7 p-0"
-                          >
-                            <Edit className="w-4 h-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => deleteTradeMutation.mutate(trade.id)}
-                            disabled={deleteTradeMutation.isPending}
-                            className="text-red-400 hover:text-red-300 hover:bg-red-900/30 h-7 w-7 p-0"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        </div>
-                      </div>
+                            )}
 
-                      {/* Close Trade Inline Form */}
-                      {isClosingThis && (
-                        <div className="border border-emerald-700 rounded-lg p-3 bg-emerald-950/30 space-y-3">
-                          <p className="text-sm font-medium text-emerald-400">Close Position — {trade.ticker} {getTradeTypeInfo(trade.tradeType).shortLabel}</p>
-                          <div className="grid grid-cols-2 gap-3">
-                            <div>
-                              <Label className="text-xs text-muted-foreground mb-1 block">Close Price</Label>
-                              <Input
-                                type="number"
-                                step="0.01"
-                                placeholder="e.g. 0.10"
-                                value={closeFormState.closePrice}
-                                onChange={e => setCloseFormState(s => ({ ...s, closePrice: e.target.value }))}
-                              />
-                            </div>
-                            <div>
-                              <Label className="text-xs text-muted-foreground mb-1 block">Close Time</Label>
-                              <Input
-                                type="time"
-                                value={closeFormState.closeTime}
-                                onChange={e => setCloseFormState(s => ({ ...s, closeTime: e.target.value }))}
-                              />
-                            </div>
-                          </div>
-                          <div>
-                            <Label className="text-xs text-muted-foreground mb-1 block">Exit Reason (optional)</Label>
-                            <Input
-                              placeholder="Why did you close?"
-                              value={closeFormState.exitReason}
-                              onChange={e => setCloseFormState(s => ({ ...s, exitReason: e.target.value }))}
-                            />
-                          </div>
-                          <div className="flex gap-2">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="flex-1"
-                              onClick={() => { setClosingTrade(null); setCloseFormState({ closePrice: '', closeTime: '', exitReason: '' }); }}
-                            >
-                              Cancel
-                            </Button>
-                            <Button
-                              size="sm"
-                              className="flex-1 bg-emerald-600 hover:bg-emerald-700"
-                              disabled={!closeFormState.closePrice || closeTradeMutation.isPending}
-                              onClick={() => {
-                                if (!closeFormState.closePrice) return;
-                                closeTradeMutation.mutate({
-                                  tradeId: trade.id,
-                                  closePrice: parseFloat(closeFormState.closePrice),
-                                  closeTime: closeFormState.closeTime,
-                                  exitReason: closeFormState.exitReason,
-                                });
-                              }}
-                            >
-                              {closeTradeMutation.isPending ? 'Closing...' : 'Confirm Close'}
-                            </Button>
-                          </div>
-                        </div>
-                      )}
+                            {/* Close inline form */}
+                            {isClosingCampaign && (
+                              <div className="border border-emerald-700 rounded-lg p-3 bg-emerald-950/30 space-y-3 mt-2">
+                                <p className="text-sm font-medium text-emerald-400">Close — {campaign.ticker} Leg {campaign.legs.length}</p>
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div><Label className="text-xs text-muted-foreground mb-1 block">Close Price</Label>
+                                    <Input type="number" step="0.01" placeholder="e.g. 0.05" value={closeFormState.closePrice} onChange={e => setCloseFormState(s => ({ ...s, closePrice: e.target.value }))} /></div>
+                                  <div><Label className="text-xs text-muted-foreground mb-1 block">Close Time</Label>
+                                    <Input type="time" value={closeFormState.closeTime} onChange={e => setCloseFormState(s => ({ ...s, closeTime: e.target.value }))} /></div>
+                                </div>
+                                <div className="flex gap-2">
+                                  <Button variant="outline" size="sm" className="flex-1" onClick={() => setClosingTrade(null)}>Cancel</Button>
+                                  <Button size="sm" className="flex-1 bg-emerald-600 hover:bg-emerald-700"
+                                    disabled={!closeFormState.closePrice || closeTradeMutation.isPending}
+                                    onClick={() => closeTradeMutation.mutate({ tradeId: closingTrade!.id, closePrice: parseFloat(closeFormState.closePrice), closeTime: closeFormState.closeTime, exitReason: closeFormState.exitReason })}>
+                                    {closeTradeMutation.isPending ? 'Closing...' : 'Confirm Close'}
+                                  </Button>
+                                </div>
+                              </div>
+                            )}
 
-                      {/* Trade Details */}
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                        <div>
-                          <span className="text-muted-foreground">Strike: </span>
-                          <span className="font-medium">${trade.strikePrice}</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Qty: </span>
-                          <span className="font-medium">{trade.quantity}</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Entry: </span>
-                          <span className="font-medium">${trade.entryPrice}</span>
-                        </div>
-                        {!isOpen && trade.exitPrice && (
-                          <div>
-                            <span className="text-muted-foreground">Exit: </span>
-                            <span className="font-medium">${trade.exitPrice}</span>
+                            {/* Roll inline form */}
+                            {isRollingCampaign && (
+                              <div className="border border-amber-600 rounded-lg p-3 bg-amber-950/20 space-y-3 mt-2">
+                                <p className="text-sm font-medium text-amber-400">Roll — {campaign.ticker} · Leg {campaign.legs.length} → Leg {campaign.legs.length + 1}</p>
+                                <div className="space-y-2">
+                                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Close current leg</p>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div><Label className="text-xs text-muted-foreground mb-1 block">Buyback Price</Label>
+                                      <Input type="number" step="0.01" placeholder="e.g. 0.05" value={rollFormState.buybackPrice} onChange={e => setRollFormState(s => ({ ...s, buybackPrice: e.target.value }))} /></div>
+                                    <div><Label className="text-xs text-muted-foreground mb-1 block">Buyback Time</Label>
+                                      <Input type="time" value={rollFormState.buybackTime} onChange={e => setRollFormState(s => ({ ...s, buybackTime: e.target.value }))} /></div>
+                                  </div>
+                                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide pt-1">Open new leg</p>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div><Label className="text-xs text-muted-foreground mb-1 block">New Strike</Label>
+                                      <Input type="number" step="0.5" placeholder="Strike" value={rollFormState.newStrike} onChange={e => setRollFormState(s => ({ ...s, newStrike: e.target.value }))} /></div>
+                                    <div><Label className="text-xs text-muted-foreground mb-1 block">New Expiration</Label>
+                                      <Input type="date" value={rollFormState.newExpiration} onChange={e => setRollFormState(s => ({ ...s, newExpiration: e.target.value }))} /></div>
+                                    <div><Label className="text-xs text-muted-foreground mb-1 block">New Premium</Label>
+                                      <Input type="number" step="0.01" placeholder="Credit received" value={rollFormState.newPremium} onChange={e => setRollFormState(s => ({ ...s, newPremium: e.target.value }))} /></div>
+                                    <div><Label className="text-xs text-muted-foreground mb-1 block">Entry Time</Label>
+                                      <Input type="time" value={rollFormState.newEntryTime} onChange={e => setRollFormState(s => ({ ...s, newEntryTime: e.target.value }))} /></div>
+                                  </div>
+                                </div>
+                                <div className="flex gap-2">
+                                  <Button variant="outline" size="sm" className="flex-1" onClick={() => setRollingTrade(null)}>Cancel</Button>
+                                  <Button size="sm" className="flex-1 bg-amber-600 hover:bg-amber-700 text-white"
+                                    disabled={!rollFormState.buybackPrice || !rollFormState.newPremium || rollTradeMutation.isPending}
+                                    onClick={() => rollTradeMutation.mutate({ tradeId: rollingTrade!.id, form: rollFormState })}>
+                                    {rollTradeMutation.isPending ? 'Rolling...' : 'Confirm Roll'}
+                                  </Button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
-                      </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
 
-                      {/* Time Information */}
-                      <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                        <div className="flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          <span>{format(new Date(trade.tradeDate), 'MMM dd')}</span>
-                        </div>
-                        <div>
-                          {format(new Date(trade.entryTime), 'HH:mm')}
-                          {trade.exitTime && (
-                            <> → {format(new Date(trade.exitTime), 'HH:mm')}</>
-                          )}
-                        </div>
-                        {trade.timeClassification && (
-                          <span className="text-primary text-xs">{trade.timeClassification}</span>
-                        )}
-                      </div>
+            {/* ── Individual Trades ──────────────────────────── */}
+            {standaloneTrades.length > 0 && (
+              <div className="space-y-3">
+                {campaigns.length > 0 && <h4 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Individual Trades</h4>}
+                <div className="space-y-3">
+                  {standaloneTrades.map((trade) => {
+                    const strategy = strategies.find(s => s.id === trade.playbookId);
+                    const pnl = trade.pnl;
+                    const isOpen = trade.status === 'open' || (!trade.exitPrice && !trade.pnl);
+                    const isClosingThis = closingTrade?.id === trade.id;
+                    const isRollingThis = rollingTrade?.id === trade.id;
 
-                      {/* Strategy */}
-                      {strategy && (
-                        <div className="text-sm">
-                          <span className="text-muted-foreground">Strategy: </span>
-                          <span className="font-medium">{strategy.name}</span>
-                        </div>
-                      )}
+                    return (
+                      <Card key={trade.id} className="w-full">
+                        <CardContent className="p-4">
+                          <div className="space-y-3">
+                            {/* Header Row */}
+                            <div className="flex items-center justify-between flex-wrap gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-lg">{trade.ticker}</span>
+                                <Badge variant={trade.type === 'calls' ? 'default' : 'secondary'}>
+                                  {getTradeTypeInfo((trade as any).tradeType).shortLabel}
+                                </Badge>
+                                {isOpen ? (
+                                  <Badge className="bg-emerald-600 text-white hover:bg-emerald-700 text-xs">OPEN</Badge>
+                                ) : (
+                                  pnl !== null && pnl !== undefined && (
+                                    <div className={`flex items-center gap-1 font-semibold text-sm ${pnl >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                                      {pnl >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
+                                      {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1">
+                                {isOpen && !isClosingThis && !isRollingThis && (
+                                  <>
+                                    <Button variant="outline" size="sm"
+                                      onClick={() => { setClosingTrade(trade); setCloseFormState({ closePrice: '', closeTime: getCurrentCSTTime(), exitReason: '' }); }}
+                                      className="text-emerald-600 border-emerald-600 hover:bg-emerald-50 text-xs px-2 h-7">
+                                      Close
+                                    </Button>
+                                    <Button variant="outline" size="sm"
+                                      onClick={() => { setRollingTrade(trade); setRollFormState({ buybackPrice: '', buybackTime: getCurrentCSTTime(), newStrike: String(trade.strikePrice ?? ''), newExpiration: getCurrentCSTDate(), newPremium: '', newEntryTime: getCurrentCSTTime() }); }}
+                                      className="text-amber-500 border-amber-500 hover:bg-amber-50 text-xs px-2 h-7">
+                                      <RefreshCw className="w-3 h-3 mr-1" />Roll
+                                    </Button>
+                                  </>
+                                )}
+                                <Button variant="ghost" size="sm" onClick={() => handleEditTrade(trade)}
+                                  className="text-blue-400 hover:text-blue-300 hover:bg-blue-900/30 h-7 w-7 p-0">
+                                  <Edit className="w-4 h-4" />
+                                </Button>
+                                <Button variant="ghost" size="sm" onClick={() => deleteTradeMutation.mutate(trade.id)}
+                                  disabled={deleteTradeMutation.isPending}
+                                  className="text-red-400 hover:text-red-300 hover:bg-red-900/30 h-7 w-7 p-0">
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </div>
 
-                      {/* Analysis Link */}
-                      {onNavigateToAnalysis && !isOpen && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => onNavigateToAnalysis(trade.id, 'analysis')}
-                          className="w-full"
+                            {/* Close inline form */}
+                            {isClosingThis && (
+                              <div className="border border-emerald-700 rounded-lg p-3 bg-emerald-950/30 space-y-3">
+                                <p className="text-sm font-medium text-emerald-400">Close — {trade.ticker} {getTradeTypeInfo((trade as any).tradeType).shortLabel}</p>
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div><Label className="text-xs text-muted-foreground mb-1 block">Close Price</Label>
+                                    <Input type="number" step="0.01" placeholder="e.g. 0.10" value={closeFormState.closePrice} onChange={e => setCloseFormState(s => ({ ...s, closePrice: e.target.value }))} /></div>
+                                  <div><Label className="text-xs text-muted-foreground mb-1 block">Close Time</Label>
+                                    <Input type="time" value={closeFormState.closeTime} onChange={e => setCloseFormState(s => ({ ...s, closeTime: e.target.value }))} /></div>
+                                </div>
+                                <Input placeholder="Exit reason (optional)" value={closeFormState.exitReason} onChange={e => setCloseFormState(s => ({ ...s, exitReason: e.target.value }))} />
+                                <div className="flex gap-2">
+                                  <Button variant="outline" size="sm" className="flex-1" onClick={() => setClosingTrade(null)}>Cancel</Button>
+                                  <Button size="sm" className="flex-1 bg-emerald-600 hover:bg-emerald-700"
+                                    disabled={!closeFormState.closePrice || closeTradeMutation.isPending}
+                                    onClick={() => closeTradeMutation.mutate({ tradeId: trade.id, closePrice: parseFloat(closeFormState.closePrice), closeTime: closeFormState.closeTime, exitReason: closeFormState.exitReason })}>
+                                    {closeTradeMutation.isPending ? 'Closing...' : 'Confirm Close'}
+                                  </Button>
+                                </div>
+                              </div>
+                            )}
 
-                        >
-                          <ChartLine className="w-4 h-4 mr-2" />
-                          Analyze Trade
-                        </Button>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
+                            {/* Roll inline form (starts a campaign from a standalone trade) */}
+                            {isRollingThis && (
+                              <div className="border border-amber-600 rounded-lg p-3 bg-amber-950/20 space-y-3">
+                                <p className="text-sm font-medium text-amber-400">Roll — {trade.ticker} · Opens a Roll Campaign</p>
+                                <div className="space-y-2">
+                                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Close current leg</p>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div><Label className="text-xs text-muted-foreground mb-1 block">Buyback Price</Label>
+                                      <Input type="number" step="0.01" placeholder="e.g. 0.05" value={rollFormState.buybackPrice} onChange={e => setRollFormState(s => ({ ...s, buybackPrice: e.target.value }))} /></div>
+                                    <div><Label className="text-xs text-muted-foreground mb-1 block">Buyback Time</Label>
+                                      <Input type="time" value={rollFormState.buybackTime} onChange={e => setRollFormState(s => ({ ...s, buybackTime: e.target.value }))} /></div>
+                                  </div>
+                                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide pt-1">Open new leg</p>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div><Label className="text-xs text-muted-foreground mb-1 block">New Strike</Label>
+                                      <Input type="number" step="0.5" value={rollFormState.newStrike} onChange={e => setRollFormState(s => ({ ...s, newStrike: e.target.value }))} /></div>
+                                    <div><Label className="text-xs text-muted-foreground mb-1 block">New Expiration</Label>
+                                      <Input type="date" value={rollFormState.newExpiration} onChange={e => setRollFormState(s => ({ ...s, newExpiration: e.target.value }))} /></div>
+                                    <div><Label className="text-xs text-muted-foreground mb-1 block">New Premium</Label>
+                                      <Input type="number" step="0.01" placeholder="Credit received" value={rollFormState.newPremium} onChange={e => setRollFormState(s => ({ ...s, newPremium: e.target.value }))} /></div>
+                                    <div><Label className="text-xs text-muted-foreground mb-1 block">Entry Time</Label>
+                                      <Input type="time" value={rollFormState.newEntryTime} onChange={e => setRollFormState(s => ({ ...s, newEntryTime: e.target.value }))} /></div>
+                                  </div>
+                                </div>
+                                <div className="flex gap-2">
+                                  <Button variant="outline" size="sm" className="flex-1" onClick={() => setRollingTrade(null)}>Cancel</Button>
+                                  <Button size="sm" className="flex-1 bg-amber-600 hover:bg-amber-700 text-white"
+                                    disabled={!rollFormState.buybackPrice || !rollFormState.newPremium || rollTradeMutation.isPending}
+                                    onClick={() => rollTradeMutation.mutate({ tradeId: trade.id, form: rollFormState })}>
+                                    {rollTradeMutation.isPending ? 'Rolling...' : 'Confirm Roll'}
+                                  </Button>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Trade Details */}
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                              <div><span className="text-muted-foreground">Strike: </span><span className="font-medium">${trade.strikePrice}</span></div>
+                              <div><span className="text-muted-foreground">Qty: </span><span className="font-medium">{trade.quantity}</span></div>
+                              <div><span className="text-muted-foreground">Entry: </span><span className="font-medium">${trade.entryPrice}</span></div>
+                              {!isOpen && trade.exitPrice && (
+                                <div><span className="text-muted-foreground">Exit: </span><span className="font-medium">${trade.exitPrice}</span></div>
+                              )}
+                            </div>
+
+                            {/* Time */}
+                            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                              <div className="flex items-center gap-1">
+                                <Clock className="w-3 h-3" />
+                                <span>{format(new Date(trade.tradeDate), 'MMM dd')}</span>
+                              </div>
+                              <div>
+                                {format(new Date(trade.entryTime), 'HH:mm')}
+                                {trade.exitTime && <> → {format(new Date(trade.exitTime), 'HH:mm')}</>}
+                              </div>
+                              {(trade as any).timeClassification && (
+                                <span className="text-primary">{(trade as any).timeClassification}</span>
+                              )}
+                            </div>
+
+                            {strategy && (
+                              <div className="text-sm">
+                                <span className="text-muted-foreground">Strategy: </span>
+                                <span className="font-medium">{strategy.name}</span>
+                              </div>
+                            )}
+
+                            {onNavigateToAnalysis && !isOpen && (
+                              <Button variant="outline" size="sm" onClick={() => onNavigateToAnalysis(trade.id, 'analysis')} className="w-full">
+                                <ChartLine className="w-4 h-4 mr-2" />Analyze Trade
+                              </Button>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
           </div>
         )}
       </div>
+
 
       {/* Bulk Upload Modal */}
       {showBulkUpload && (

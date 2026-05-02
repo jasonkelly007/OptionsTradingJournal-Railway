@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
+import crypto from "crypto";
 import { storage } from "./storage";
 import { getSession, authenticate, login, logout, getUser } from "./auth";
 import { insertTradeSchema, insertPremarketAnalysisSchema, insertTradeAnalysisSchema, insertPlaybookStrategySchema, insertIntradayNoteSchema } from "@shared/schema";
@@ -144,6 +145,60 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: "Failed to delete trade" });
     }
   });
+
+  // ─── Roll Trade: close current leg as 'rolled', open a new leg with shared campaignId ───
+  app.post("/api/trades/:id/roll", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { buybackPrice, buybackTime, newStrike, newExpiration, newPremium, newEntryTime } = req.body;
+
+      const existing = await storage.getTrade(id);
+      if (!existing) return res.status(404).json({ message: "Trade not found" });
+      if (existing.exitPrice) return res.status(400).json({ message: "Cannot roll a trade that is already closed" });
+
+      // Reuse existing campaignId or mint a new UUID
+      const campaignId = (existing as any).campaignId ?? crypto.randomUUID();
+
+      const tradeDateStr = new Date(existing.tradeDate).toISOString().split('T')[0];
+      const exitTime = buybackTime ? new Date(`${tradeDateStr} ${buybackTime}`) : new Date();
+
+      // Close the current leg as 'rolled'
+      const closedLegData = enrichTrade({
+        ...existing,
+        exitPrice: parseFloat(buybackPrice),
+        exitTime,
+        campaignId,
+      });
+      const rolledTrade = await storage.updateTrade(id, { ...closedLegData, status: "rolled" });
+
+      // Build and create the new leg
+      const newExpDate = newExpiration
+        ? (() => { const p = newExpiration.split('-'); return new Date(parseInt(p[0]), parseInt(p[1]) - 1, parseInt(p[2])); })()
+        : existing.expirationDate ? new Date(existing.expirationDate) : new Date();
+      const newEntryDate = newEntryTime ? new Date(`${tradeDateStr} ${newEntryTime}`) : new Date();
+
+      const newLegData = enrichTrade({
+        ticker: existing.ticker,
+        tradeType: existing.tradeType ?? "long_call",
+        quantity: existing.quantity,
+        strikePrice: newStrike ? parseFloat(newStrike) : existing.strikePrice,
+        entryPrice: parseFloat(newPremium),
+        entryTime: newEntryDate,
+        expirationDate: newExpDate,
+        tradeDate: existing.tradeDate,
+        campaignId,
+        entryReason: `Rolled from leg #${id}`,
+        playbookId: existing.playbookId,
+      });
+      const newTrade = await storage.createTrade(newLegData);
+
+      res.json({ rolledTrade, newTrade, campaignId });
+    } catch (error) {
+      res.status(400).json({ message: "Failed to roll trade", error });
+    }
+  });
+  // ─────────────────────────────────────────────────────────────────────────────
+
 
   // Premarket Analysis routes
   app.get("/api/premarket-analysis", async (req, res) => {

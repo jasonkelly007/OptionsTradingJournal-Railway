@@ -40,6 +40,7 @@ export const trades = pgTable("trades", {
   timeClassification: text("time_classification"), // 'Cash Open', 'Euro Close', 'Power Hour', 'Other'
   tradeDate: timestamp("trade_date").notNull(),
   status: text("status").default("closed"), // 'open' | 'closed' | 'rolled'
+  campaignId: text("campaign_id"), // UUID linking rolled legs into a campaign
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -163,6 +164,7 @@ export const insertTradeSchema = createInsertSchema(trades).omit({
   status: z.enum(["open", "closed", "rolled"]).optional().default("closed"),
   tradeType: z.string().optional().default("long_call"),
   openTx: z.enum(["BTO", "STO"]).optional().default("BTO"),
+  campaignId: z.string().optional().nullable(),
 });
 
 
