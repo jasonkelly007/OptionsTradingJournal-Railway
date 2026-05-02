@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 
 export default function Login() {
@@ -17,9 +17,7 @@ export default function Login() {
     try {
       const response = await fetch("/api/auth/login", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
 
@@ -46,12 +44,24 @@ export default function Login() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader className="text-center">
-          <CardTitle className="text-2xl font-bold">QuantRails Trading Journal</CardTitle>
-          <p className="text-muted-foreground">Sign in to access your dashboard</p>
+      <Card className="w-full max-w-md border-border/60 shadow-2xl">
+        <CardHeader className="text-center pt-8 pb-4">
+          {/* Rocket Logo — Rocket Sniper style */}
+          <div className="flex flex-col items-center gap-2 mb-4">
+            <span className="text-6xl leading-none select-none" role="img" aria-label="rocket">🚀</span>
+            <div className="flex flex-col items-center">
+              <h1 className="text-3xl font-black tracking-tight">
+                <span className="text-foreground">ROCKET</span>
+                <span className="text-primary">RAILS</span>
+              </h1>
+              <p className="text-xs text-muted-foreground uppercase tracking-widest mt-1">
+                Stay on Track to the Moon
+              </p>
+            </div>
+          </div>
+          <p className="text-sm text-muted-foreground">Sign in to your trading journal</p>
         </CardHeader>
-        <CardContent>
+        <CardContent className="pb-8">
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <label htmlFor="username" className="block text-sm font-medium mb-2">
@@ -80,10 +90,9 @@ export default function Login() {
               />
             </div>
             <Button type="submit" className="w-full" disabled={isLoading}>
-              {isLoading ? "Signing in..." : "Sign In"}
+              {isLoading ? "Signing in..." : "Launch Dashboard 🚀"}
             </Button>
           </form>
-
         </CardContent>
       </Card>
     </div>

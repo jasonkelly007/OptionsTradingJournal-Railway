@@ -43,19 +43,23 @@ export default function Sidebar({ activeSection, onSectionChange, isCollapsed, o
         <div className={`${isCollapsed ? 'p-2 lg:p-4' : 'p-6'} h-full flex flex-col`}>
           {/* Header */}
           <div className="flex items-center justify-between mb-8">
-            <div className={`flex items-center ${isCollapsed ? 'lg:justify-center lg:flex-col lg:space-x-0 lg:space-y-2 space-x-3' : 'space-x-3'}`}>
-              <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center flex-shrink-0">
-                <TrendingUp className="text-primary-foreground text-sm" />
+            <div className={`flex items-center ${isCollapsed ? 'lg:justify-center lg:flex-col lg:space-x-0 lg:space-y-1 space-x-3' : 'space-x-3'}`}>
+              {/* Rocket Logo */}
+              <div className="flex-shrink-0 w-9 h-9 flex items-center justify-center">
+                <span className="text-2xl leading-none select-none" role="img" aria-label="rocket">🚀</span>
               </div>
               {!isCollapsed && (
                 <div className="flex flex-col">
-                  <h1 className="text-xl font-bold">QuantRails</h1>
-                  <span className="text-sm text-muted-foreground">Trading Journal</span>
+                  <h1 className="text-xl font-bold tracking-tight">
+                    <span className="text-foreground">ROCKET</span>
+                    <span className="text-primary">RAILS</span>
+                  </h1>
+                  <span className="text-[10px] text-muted-foreground uppercase tracking-widest">Stay on Track to the Moon</span>
                 </div>
               )}
               {isCollapsed && (
                 <div className="hidden lg:flex flex-col items-center">
-                  <h1 className="text-xs font-bold">QR</h1>
+                  <span className="text-[10px] font-bold text-primary">RR</span>
                 </div>
               )}
             </div>
