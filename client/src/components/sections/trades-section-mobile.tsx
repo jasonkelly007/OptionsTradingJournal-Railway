@@ -32,7 +32,7 @@ const tradeFormSchema = z.object({
   expirationDate: z.string().min(1, "Expiration date is required"),
   entryReason: z.string().optional(),
   exitReason: z.string().optional(),
-  playbookId: z.coerce.number().min(1, "Strategy selection is required"),
+  playbookId: z.coerce.number().optional(),
   tradeDate: z.string().min(1, "Trade date is required"),
 });
 
@@ -549,7 +549,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Trading Strategy</FormLabel>
-                      <Select onValueChange={(value) => field.onChange(parseInt(value))} value={field.value?.toString() || ""}>
+                      <Select onValueChange={(value) => field.onChange(value ? parseInt(value) : undefined)} value={field.value?.toString() || ""}>
                         <FormControl>
                           <SelectTrigger>
                             <SelectValue placeholder="Select a strategy" />
