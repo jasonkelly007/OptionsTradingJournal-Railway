@@ -457,7 +457,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { key } = req.params;
       const setting = await storage.getSetting(key);
       if (!setting) {
-        return res.status(404).json({ message: "Setting not found" });
+        // Return a default instead of 404 so the dashboard renders cleanly on first boot
+        const defaults: Record<string, string> = {
+          account_balance: "10000",
+        };
+        const defaultValue = defaults[key] ?? "0";
+        return res.json({ key, value: defaultValue });
       }
       res.json(setting);
     } catch (error) {

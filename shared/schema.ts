@@ -152,6 +152,8 @@ export const insertTradeSchema = createInsertSchema(trades).omit({
   id: true,
   createdAt: true,
 }).extend({
+  // 'type' is now derived server-side from tradeType — make it optional so the client doesn't need to send it
+  type: z.string().optional().default("calls"),
   entryTime: z.coerce.date(),
   exitTime: z.coerce.date().optional().nullable(),
   expirationDate: z.coerce.date().optional().nullable(),
