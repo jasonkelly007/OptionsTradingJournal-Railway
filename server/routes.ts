@@ -18,21 +18,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return "Other";
   }
 
+  // Inline trade type map (mirrors shared/trade-types.ts — avoid circular imports in ESM server bundle)
+  const TRADE_TYPE_MAP: Record<string, { openTx: "BTO" | "STO"; type: string; multiplier: number }> = {
+    long_call:         { openTx: "BTO", type: "calls", multiplier: 100 },
+    long_put:          { openTx: "BTO", type: "puts",  multiplier: 100 },
+    short_put_csp:     { openTx: "STO", type: "puts",  multiplier: 100 },
+    short_call_cc:     { openTx: "STO", type: "calls", multiplier: 100 },
+    bull_put_spread:   { openTx: "STO", type: "puts",  multiplier: 100 },
+    bear_call_spread:  { openTx: "STO", type: "calls", multiplier: 100 },
+    bull_call_spread:  { openTx: "BTO", type: "calls", multiplier: 100 },
+    bear_put_spread:   { openTx: "BTO", type: "puts",  multiplier: 100 },
+    stock:             { openTx: "BTO", type: "stock",  multiplier: 1   },
+  };
+
   function enrichTrade(data: any) {
+    // Derive openTx, legacy type, and multiplier from tradeType
+    const cfg = TRADE_TYPE_MAP[data.tradeType as string] ?? TRADE_TYPE_MAP["long_call"];
+    const openTx: "BTO" | "STO" = data.openTx ?? cfg.openTx; // prefer explicit if set
+    const derivedType = cfg.type;
+    const multiplier = cfg.multiplier;
+
     const hasExit = data.exitPrice !== null && data.exitPrice !== undefined;
-    const pnl = hasExit
-      ? parseFloat(
-          ((data.exitPrice - data.entryPrice) * data.quantity * 100).toFixed(2)
-        )
-      : null;
-    const timeClassification = data.entryTime
-      ? classifyTime(data.entryTime)
-      : null;
-    // Server always owns status — override client value
+
+    let pnl: number | null = null;
+    if (hasExit && data.entryPrice != null && data.quantity != null) {
+      const diff = openTx === "STO"
+        ? data.entryPrice - data.exitPrice  // Short: profit when close is cheaper
+        : data.exitPrice - data.entryPrice; // Long: profit when close is higher
+      pnl = parseFloat((diff * data.quantity * multiplier).toFixed(2));
+    }
+
+    const timeClassification = data.entryTime ? classifyTime(data.entryTime) : null;
     const status = hasExit ? "closed" : "open";
-    return { ...data, pnl, timeClassification, status };
+
+    return {
+      ...data,
+      type: derivedType,
+      openTx,
+      pnl,
+      timeClassification,
+      status,
+    };
   }
   // ────────────────────────────────────────────────────────────────────────────
+
 
   // Authentication routes (public)
   app.post("/api/auth/login", login);

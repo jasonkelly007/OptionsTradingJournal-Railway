@@ -9,33 +9,35 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Plus, ChartLine, Edit, Trash2, Clock, DollarSign, TrendingUp, TrendingDown, Upload } from "lucide-react";
+import { Plus, ChartLine, Edit, Trash2, Clock, TrendingUp, TrendingDown, Upload } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { calculateOptionsPnL, classifyTimeOfDay } from "@/lib/trade-calculations";
+import { calculateTradePnL, classifyTimeOfDay } from "@/lib/trade-calculations";
+import { getTradeTypeInfo, TRADE_TYPE_GROUPS, type TradeTypeKey } from "@shared/trade-types";
 import type { Trade, PlaybookStrategy } from "@shared/schema";
 import { format } from "date-fns";
 import BulkTradeUpload from "@/components/bulk-trade-upload";
 
 const tradeFormSchema = z.object({
   ticker: z.string().min(1, "Ticker is required"),
-  type: z.enum(["calls", "puts"]),
+  tradeType: z.string().default("long_call"),
   quantity: z.coerce.number().min(1, "Quantity must be at least 1"),
-  strikePrice: z.coerce.number().min(0, "Strike price must be positive"),
+  strikePrice: z.coerce.number().min(0, "Strike price must be positive").optional(),
   entryPrice: z.coerce.number().min(0, "Entry price must be positive"),
   isOpen: z.boolean().default(false),
   exitPrice: z.coerce.number().min(0, "Exit price must be positive").optional(),
   entryTime: z.string().min(1, "Entry time is required"),
   exitTime: z.string().optional(),
-  expirationDate: z.string().min(1, "Expiration date is required"),
+  expirationDate: z.string().optional(),
   entryReason: z.string().optional(),
   exitReason: z.string().optional(),
   playbookId: z.coerce.number().optional(),
   tradeDate: z.string().min(1, "Trade date is required"),
 });
+
 
 type TradeFormData = z.infer<typeof tradeFormSchema>;
 
@@ -77,7 +79,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
     resolver: zodResolver(tradeFormSchema),
     defaultValues: {
       ticker: "SPY",
-      type: "calls",
+      tradeType: "long_call",
       quantity: 1,
       strikePrice: undefined,
       entryPrice: undefined,
@@ -105,24 +107,25 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
   // Create trade mutation
   const createTradeMutation = useMutation({
     mutationFn: async (data: TradeFormData) => {
-      // Normalize dates to avoid timezone shifts
+      // Normalize dates
       const tradeDateParts = data.tradeDate.split('-');
-      const year = parseInt(tradeDateParts[0]);
-      const month = parseInt(tradeDateParts[1]) - 1; // Month is 0-indexed
-      const day = parseInt(tradeDateParts[2]);
-      const normalizedTradeDate = new Date(year, month, day);
-      
-      const expirationParts = data.expirationDate.split('-');
-      const expYear = parseInt(expirationParts[0]);
-      const expMonth = parseInt(expirationParts[1]) - 1;
-      const expDay = parseInt(expirationParts[2]);
-      const normalizedExpirationDate = new Date(expYear, expMonth, expDay);
+      const normalizedTradeDate = new Date(
+        parseInt(tradeDateParts[0]), parseInt(tradeDateParts[1]) - 1, parseInt(tradeDateParts[2])
+      );
+
+      let normalizedExpirationDate: Date | null = null;
+      if (data.expirationDate) {
+        const expParts = data.expirationDate.split('-');
+        normalizedExpirationDate = new Date(
+          parseInt(expParts[0]), parseInt(expParts[1]) - 1, parseInt(expParts[2])
+        );
+      }
 
       const tradeData = {
         ticker: data.ticker,
-        type: data.type,
+        tradeType: data.tradeType,
         quantity: data.quantity,
-        strikePrice: data.strikePrice,
+        strikePrice: data.strikePrice ?? null,
         entryPrice: data.entryPrice,
         exitPrice: data.isOpen ? null : (data.exitPrice ?? null),
         entryTime: new Date(`${data.tradeDate} ${data.entryTime}`),
@@ -132,7 +135,6 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
         exitReason: data.exitReason,
         playbookId: data.playbookId,
         tradeDate: normalizedTradeDate,
-        // status is computed server-side from exitPrice presence
       };
       
       return apiRequest('/api/trades', 'POST', tradeData);
@@ -143,10 +145,11 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
       queryClient.invalidateQueries({ queryKey: ['/api/performance/analytics'] });
       form.reset({
         ticker: "SPY",
-        type: "calls",
+        tradeType: "long_call",
         quantity: 1,
         strikePrice: undefined,
         entryPrice: undefined,
+        isOpen: false,
         exitPrice: undefined,
         entryTime: getCurrentCSTTime(),
         exitTime: "",
@@ -173,24 +176,25 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
   // Update trade mutation
   const updateTradeMutation = useMutation({
     mutationFn: async ({ tradeId, data }: { tradeId: number; data: TradeFormData }) => {
-      // Normalize dates to avoid timezone shifts
+      // Normalize dates
       const tradeDateParts = data.tradeDate.split('-');
-      const year = parseInt(tradeDateParts[0]);
-      const month = parseInt(tradeDateParts[1]) - 1; // Month is 0-indexed
-      const day = parseInt(tradeDateParts[2]);
-      const normalizedTradeDate = new Date(year, month, day);
-      
-      const expirationParts = data.expirationDate.split('-');
-      const expYear = parseInt(expirationParts[0]);
-      const expMonth = parseInt(expirationParts[1]) - 1;
-      const expDay = parseInt(expirationParts[2]);
-      const normalizedExpirationDate = new Date(expYear, expMonth, expDay);
+      const normalizedTradeDate = new Date(
+        parseInt(tradeDateParts[0]), parseInt(tradeDateParts[1]) - 1, parseInt(tradeDateParts[2])
+      );
+
+      let normalizedExpirationDate: Date | null = null;
+      if (data.expirationDate) {
+        const expParts = data.expirationDate.split('-');
+        normalizedExpirationDate = new Date(
+          parseInt(expParts[0]), parseInt(expParts[1]) - 1, parseInt(expParts[2])
+        );
+      }
 
       const tradeData = {
         ticker: data.ticker,
-        type: data.type,
+        tradeType: data.tradeType,
         quantity: data.quantity,
-        strikePrice: data.strikePrice,
+        strikePrice: data.strikePrice ?? null,
         entryPrice: data.entryPrice,
         exitPrice: data.isOpen ? null : (data.exitPrice ?? null),
         entryTime: new Date(`${data.tradeDate} ${data.entryTime}`),
@@ -210,10 +214,11 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
       queryClient.invalidateQueries({ queryKey: ['/api/performance/analytics'] });
       form.reset({
         ticker: "SPY",
-        type: "calls",
+        tradeType: "long_call",
         quantity: 1,
         strikePrice: undefined,
         entryPrice: undefined,
+        isOpen: false,
         exitPrice: undefined,
         entryTime: getCurrentCSTTime(),
         exitTime: "",
@@ -296,21 +301,21 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
   const handleEditTrade = (trade: Trade) => {
     const entryTime = new Date(trade.entryTime);
     const exitTime = trade.exitTime ? new Date(trade.exitTime) : null;
-    const expirationDate = new Date(trade.expirationDate);
+    const expirationDate = trade.expirationDate ? new Date(trade.expirationDate) : null;
     const tradeDate = new Date(trade.tradeDate);
     const isOpen = !trade.exitPrice;
 
     form.reset({
       ticker: trade.ticker,
-      type: trade.type as "calls" | "puts",
+      tradeType: (trade.tradeType as TradeTypeKey) || "long_call",
       quantity: trade.quantity,
-      strikePrice: trade.strikePrice,
+      strikePrice: trade.strikePrice ?? undefined,
       entryPrice: trade.entryPrice,
       isOpen,
       exitPrice: trade.exitPrice || undefined,
       entryTime: entryTime.toTimeString().split(' ')[0].substring(0, 5),
       exitTime: exitTime ? exitTime.toTimeString().split(' ')[0].substring(0, 5) : "",
-      expirationDate: expirationDate.toISOString().split('T')[0],
+      expirationDate: expirationDate ? expirationDate.toISOString().split('T')[0] : "",
       entryReason: trade.entryReason || "",
       exitReason: trade.exitReason || "",
       playbookId: trade.playbookId || undefined,
@@ -326,7 +331,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
     setShowForm(false);
     form.reset({
       ticker: "SPY",
-      type: "calls",
+      tradeType: "long_call",
       quantity: 1,
       strikePrice: undefined,
       entryPrice: undefined,
@@ -343,11 +348,15 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
 
   const watchedValues = form.watch();
   const isOpenWatch = form.watch('isOpen');
+  const tradeTypeWatch = form.watch('tradeType') as TradeTypeKey;
+  const selectedStrategy = getTradeTypeInfo(tradeTypeWatch);
+  const isStock = tradeTypeWatch === 'stock';
+
   const calculatedPnL = !isOpenWatch && watchedValues.exitPrice && watchedValues.entryPrice && watchedValues.quantity
-    ? calculateOptionsPnL(watchedValues.entryPrice, watchedValues.exitPrice, watchedValues.quantity)
+    ? calculateTradePnL(tradeTypeWatch, watchedValues.entryPrice, watchedValues.exitPrice, watchedValues.quantity)
     : null;
 
-  const timeClassification = watchedValues.entryTime 
+  const timeClassification = watchedValues.entryTime
     ? classifyTimeOfDay(watchedValues.entryTime)
     : null;
 
@@ -434,23 +443,40 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                     )}
                   />
 
+                  {/* Strategy Dropdown — replaces old Calls/Puts toggle */}
                   <FormField
                     control={form.control}
-                    name="type"
+                    name="tradeType"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Type</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value || ""}>
+                        <FormLabel>Strategy</FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value || "long_call"}>
                           <FormControl>
                             <SelectTrigger>
-                              <SelectValue placeholder="Select type" />
+                              <SelectValue placeholder="Select strategy" />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
-                            <SelectItem value="calls">Calls</SelectItem>
-                            <SelectItem value="puts">Puts</SelectItem>
+                            {TRADE_TYPE_GROUPS.map((group) => (
+                              <SelectGroup key={group.label}>
+                                <SelectLabel className="text-xs text-muted-foreground">{group.label}</SelectLabel>
+                                {group.types.map((key) => {
+                                  const cfg = getTradeTypeInfo(key);
+                                  return (
+                                    <SelectItem key={key} value={key}>
+                                      {cfg.label}
+                                      <span className="ml-2 text-xs text-muted-foreground">{cfg.openTx}</span>
+                                    </SelectItem>
+                                  );
+                                })}
+                              </SelectGroup>
+                            ))}
                           </SelectContent>
                         </Select>
+                        {/* Strategy hint for STO trades */}
+                        {selectedStrategy.openTx === 'STO' && (
+                          <p className="text-xs text-amber-400 mt-1">⚠️ {selectedStrategy.hint}</p>
+                        )}
                         <FormMessage />
                       </FormItem>
                     )}
@@ -461,14 +487,14 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                     name="quantity"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Contracts</FormLabel>
+                        <FormLabel>{isStock ? 'Shares' : 'Contracts'}</FormLabel>
                         <FormControl>
-                          <Input 
-                            type="number" 
+                          <Input
+                            type="number"
                             {...field}
                             value={field.value || ""}
                             onChange={(e) => field.onChange(e.target.value === "" ? undefined : parseInt(e.target.value))}
-                            placeholder="Enter quantity"
+                            placeholder={isStock ? "Number of shares" : "Number of contracts"}
                           />
                         </FormControl>
                         <FormMessage />
@@ -476,41 +502,46 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                     )}
                   />
 
-                  <FormField
-                    control={form.control}
-                    name="strikePrice"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Strike Price</FormLabel>
-                        <FormControl>
-                          <Input 
-                            type="number" 
-                            step="0.01" 
-                            {...field}
-                            value={field.value || ""}
-                            onChange={(e) => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))}
-                            placeholder="Enter strike price"
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  {/* Strike Price — hidden for stock */}
+                  {!isStock && (
+                    <FormField
+                      control={form.control}
+                      name="strikePrice"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Strike Price</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              {...field}
+                              value={field.value || ""}
+                              onChange={(e) => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))}
+                              placeholder="Enter strike price"
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
 
                   <FormField
                     control={form.control}
                     name="entryPrice"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Entry Price</FormLabel>
+                        <FormLabel>
+                          {selectedStrategy.openTx === 'STO' ? 'Premium Received (credit)' : 'Entry Price'}
+                        </FormLabel>
                         <FormControl>
-                          <Input 
-                            type="number" 
-                            step="0.01" 
+                          <Input
+                            type="number"
+                            step="0.01"
                             {...field}
                             value={field.value || ""}
                             onChange={(e) => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))}
-                            placeholder="Enter entry price"
+                            placeholder={selectedStrategy.openTx === 'STO' ? 'e.g. 1.50' : 'Entry price'}
                           />
                         </FormControl>
                         <FormMessage />
@@ -550,7 +581,9 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                       name="exitPrice"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Exit Price</FormLabel>
+                          <FormLabel>
+                            {selectedStrategy.openTx === 'STO' ? 'Close Price (debit to close)' : 'Exit Price'}
+                          </FormLabel>
                           <FormControl>
                             <Input
                               type="number"
@@ -558,7 +591,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                               {...field}
                               value={field.value || ""}
                               onChange={(e) => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))}
-                              placeholder="Enter exit price"
+                              placeholder={selectedStrategy.openTx === 'STO' ? 'e.g. 0.10' : 'Exit price'}
                             />
                           </FormControl>
                           <FormMessage />
@@ -567,19 +600,22 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                     />
                   )}
 
-                  <FormField
-                    control={form.control}
-                    name="expirationDate"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Expiration Date</FormLabel>
-                        <FormControl>
-                          <Input type="date" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  {/* Expiration Date — hidden for stock */}
+                  {!isStock && (
+                    <FormField
+                      control={form.control}
+                      name="expirationDate"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Expiration Date</FormLabel>
+                          <FormControl>
+                            <Input type="date" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
 
                   <FormField
                     control={form.control}
@@ -792,7 +828,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-semibold text-lg">{trade.ticker}</span>
                           <Badge variant={trade.type === 'calls' ? 'default' : 'secondary'}>
-                            {trade.type.toUpperCase()}
+                            {getTradeTypeInfo(trade.tradeType).shortLabel}
                           </Badge>
                           {isOpen ? (
                             <Badge className="bg-emerald-600 text-white hover:bg-emerald-700 text-xs">OPEN</Badge>
@@ -842,7 +878,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                       {/* Close Trade Inline Form */}
                       {isClosingThis && (
                         <div className="border border-emerald-700 rounded-lg p-3 bg-emerald-950/30 space-y-3">
-                          <p className="text-sm font-medium text-emerald-400">Close Position — {trade.ticker} {trade.type.toUpperCase()}</p>
+                          <p className="text-sm font-medium text-emerald-400">Close Position — {trade.ticker} {getTradeTypeInfo(trade.tradeType).shortLabel}</p>
                           <div className="grid grid-cols-2 gap-3">
                             <div>
                               <Label className="text-xs text-muted-foreground mb-1 block">Close Price</Label>

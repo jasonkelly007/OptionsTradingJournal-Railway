@@ -23,14 +23,16 @@ export const users = pgTable("users", {
 export const trades = pgTable("trades", {
   id: serial("id").primaryKey(),
   ticker: text("ticker").notNull(),
-  type: text("type").notNull(), // 'calls' or 'puts'
+  type: text("type").notNull(), // legacy: 'calls' | 'puts' | 'stock' — now derived from tradeType
+  tradeType: text("trade_type").default("long_call"), // full strategy enum — see shared/trade-types.ts
+  openTx: text("open_tx").default("BTO"), // 'BTO' | 'STO' — derived from tradeType server-side
   quantity: integer("quantity").notNull(),
   entryPrice: real("entry_price").notNull(),
   exitPrice: real("exit_price"),
   entryTime: timestamp("entry_time").notNull(),
   exitTime: timestamp("exit_time"),
-  strikePrice: real("strike_price").notNull(),
-  expirationDate: timestamp("expiration_date").notNull(),
+  strikePrice: real("strike_price"),
+  expirationDate: timestamp("expiration_date"),
   pnl: real("pnl"),
   entryReason: text("entry_reason"),
   exitReason: text("exit_reason"),
@@ -151,13 +153,16 @@ export const insertTradeSchema = createInsertSchema(trades).omit({
 }).extend({
   entryTime: z.coerce.date(),
   exitTime: z.coerce.date().optional().nullable(),
-  expirationDate: z.coerce.date(),
+  expirationDate: z.coerce.date().optional().nullable(),
   tradeDate: z.coerce.date(),
   pnl: z.coerce.number().optional().nullable(),
   exitPrice: z.coerce.number().optional().nullable(),
+  strikePrice: z.coerce.number().optional().nullable(),
   playbookId: z.coerce.number().optional().nullable(),
   usePlaybook: z.boolean().optional(),
   status: z.enum(["open", "closed", "rolled"]).optional().default("closed"),
+  tradeType: z.string().optional().default("long_call"),
+  openTx: z.enum(["BTO", "STO"]).optional().default("BTO"),
 });
 
 

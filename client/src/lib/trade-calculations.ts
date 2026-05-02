@@ -1,4 +1,26 @@
+import { getTradeTypeInfo } from "@shared/trade-types";
+
+/**
+ * Unified P&L calculation — respects strategy direction (BTO vs STO) and multiplier.
+ * Used in the form preview and anywhere trade P&L needs to be recalculated client-side.
+ */
+export function calculateTradePnL(
+  tradeType: string,
+  entryPrice: number,
+  exitPrice: number,
+  quantity: number,
+  commission: number = 0
+): number {
+  const { openTx, multiplier } = getTradeTypeInfo(tradeType);
+  const diff = openTx === "STO"
+    ? entryPrice - exitPrice  // Short: profit when close price < entry credit
+    : exitPrice - entryPrice; // Long: profit when close price > entry cost
+  return diff * quantity * multiplier - commission;
+}
+
+/** Legacy helper kept for backward compatibility — assumes long options (BTO, 100x multiplier). */
 export function calculateOptionsPnL(
+
   entryPrice: number,
   exitPrice: number,
   quantity: number,
