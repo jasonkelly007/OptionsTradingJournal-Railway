@@ -35,7 +35,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   function enrichTrade(data: any) {
     // Derive openTx, legacy type, and multiplier from tradeType
     const cfg = TRADE_TYPE_MAP[data.tradeType as string] ?? TRADE_TYPE_MAP["long_call"];
-    const openTx: "BTO" | "STO" = data.openTx ?? cfg.openTx; // prefer explicit if set
+    const openTx: "BTO" | "STO" = data.openTx ?? cfg.openTx;
     const derivedType = cfg.type;
     const multiplier = cfg.multiplier;
 
@@ -44,10 +44,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
     let pnl: number | null = null;
     if (hasExit && data.entryPrice != null && data.quantity != null) {
       const diff = openTx === "STO"
-        ? data.entryPrice - data.exitPrice  // Short: profit when close is cheaper
-        : data.exitPrice - data.entryPrice; // Long: profit when close is higher
+        ? data.entryPrice - data.exitPrice
+        : data.exitPrice - data.entryPrice;
       pnl = parseFloat((diff * data.quantity * multiplier).toFixed(2));
     }
+
+    // ── Spread width math ──────────────────────────────────────────────────────
+    const SPREAD_TYPES = ["bull_put_spread", "bear_call_spread", "bull_call_spread", "bear_put_spread"];
+    let maxProfit: number | null = data.maxProfit ?? null;
+    let maxLoss: number | null = data.maxLoss ?? null;
+
+    if (SPREAD_TYPES.includes(data.tradeType) && data.shortStrike != null && data.strikePrice != null) {
+      const spreadWidth = Math.abs(data.shortStrike - data.strikePrice);
+      const credit = data.entryPrice ?? 0;
+      const qty = data.quantity ?? 1;
+
+      if (openTx === "STO") {
+        // Credit spread: you collect the net credit, risk the rest of the width
+        maxProfit = parseFloat((credit * qty * 100).toFixed(2));
+        maxLoss   = parseFloat(((spreadWidth - credit) * qty * 100).toFixed(2));
+      } else {
+        // Debit spread: you pay the net debit, max gain is the rest of the width
+        maxLoss   = parseFloat((credit * qty * 100).toFixed(2));
+        maxProfit = parseFloat(((spreadWidth - credit) * qty * 100).toFixed(2));
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────────────
 
     const timeClassification = data.entryTime ? classifyTime(data.entryTime) : null;
     const status = hasExit ? "closed" : "open";
@@ -59,6 +81,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       pnl,
       timeClassification,
       status,
+      maxProfit,
+      maxLoss,
     };
   }
   // ────────────────────────────────────────────────────────────────────────────

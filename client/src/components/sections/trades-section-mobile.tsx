@@ -26,6 +26,7 @@ const tradeFormSchema = z.object({
   tradeType: z.string().default("long_call"),
   quantity: z.coerce.number().min(1, "Quantity must be at least 1"),
   strikePrice: z.coerce.number().min(0, "Strike price must be positive").optional(),
+  shortStrike: z.coerce.number().min(0, "Short strike must be positive").optional(),
   entryPrice: z.coerce.number().min(0, "Entry price must be positive"),
   isOpen: z.boolean().default(false),
   exitPrice: z.coerce.number().min(0, "Exit price must be positive").optional(),
@@ -96,6 +97,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
       tradeType: "long_call",
       quantity: 1,
       strikePrice: undefined,
+      shortStrike: undefined,
       entryPrice: undefined,
       isOpen: false,
       exitPrice: undefined,
@@ -140,6 +142,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
         tradeType: data.tradeType,
         quantity: data.quantity,
         strikePrice: data.strikePrice ?? null,
+        shortStrike: data.shortStrike ?? null,
         entryPrice: data.entryPrice,
         exitPrice: data.isOpen ? null : (data.exitPrice ?? null),
         entryTime: new Date(`${data.tradeDate} ${data.entryTime}`),
@@ -162,6 +165,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
         tradeType: "long_call",
         quantity: 1,
         strikePrice: undefined,
+        shortStrike: undefined,
         entryPrice: undefined,
         isOpen: false,
         exitPrice: undefined,
@@ -209,6 +213,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
         tradeType: data.tradeType,
         quantity: data.quantity,
         strikePrice: data.strikePrice ?? null,
+        shortStrike: data.shortStrike ?? null,
         entryPrice: data.entryPrice,
         exitPrice: data.isOpen ? null : (data.exitPrice ?? null),
         entryTime: new Date(`${data.tradeDate} ${data.entryTime}`),
@@ -231,6 +236,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
         tradeType: "long_call",
         quantity: 1,
         strikePrice: undefined,
+        shortStrike: undefined,
         entryPrice: undefined,
         isOpen: false,
         exitPrice: undefined,
@@ -348,6 +354,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
       tradeType: (trade.tradeType as TradeTypeKey) || "long_call",
       quantity: trade.quantity,
       strikePrice: trade.strikePrice ?? undefined,
+      shortStrike: (trade as any).shortStrike ?? undefined,
       entryPrice: trade.entryPrice,
       isOpen,
       exitPrice: trade.exitPrice || undefined,
@@ -372,6 +379,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
       tradeType: "long_call",
       quantity: 1,
       strikePrice: undefined,
+      shortStrike: undefined,
       entryPrice: undefined,
       isOpen: false,
       exitPrice: undefined,
@@ -389,6 +397,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
   const tradeTypeWatch = form.watch('tradeType') as TradeTypeKey;
   const selectedStrategy = getTradeTypeInfo(tradeTypeWatch);
   const isStock = tradeTypeWatch === 'stock';
+  const isSpread = ['bull_put_spread', 'bear_call_spread', 'bull_call_spread', 'bear_put_spread'].includes(tradeTypeWatch);
 
   const calculatedPnL = !isOpenWatch && watchedValues.exitPrice && watchedValues.entryPrice && watchedValues.quantity
     ? calculateTradePnL(tradeTypeWatch, watchedValues.entryPrice, watchedValues.exitPrice, watchedValues.quantity)
@@ -587,11 +596,11 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                       name="strikePrice"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Strike Price</FormLabel>
+                          <FormLabel>{isSpread ? 'Long Strike (your leg)' : 'Strike Price'}</FormLabel>
                           <FormControl>
                             <Input
                               type="number"
-                              step="0.01"
+                              step="0.5"
                               {...field}
                               value={field.value || ""}
                               onChange={(e) => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))}
@@ -604,13 +613,80 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                     />
                   )}
 
+                  {/* Short Strike — only shown for spread strategies */}
+                  {isSpread && (
+                    <FormField
+                      control={form.control}
+                      name="shortStrike"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>
+                            {selectedStrategy.openTx === 'STO'
+                              ? 'Short Strike (strike you sold)'
+                              : 'Short Strike (further leg)'}
+                          </FormLabel>
+                          <FormControl>
+                            <Input
+                              type="number"
+                              step="0.5"
+                              {...field}
+                              value={field.value || ""}
+                              onChange={(e) => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))}
+                              placeholder={
+                                tradeTypeWatch === 'bull_put_spread' ? 'e.g. 490 (higher put strike sold)'
+                                : tradeTypeWatch === 'bear_call_spread' ? 'e.g. 510 (lower call strike sold)'
+                                : tradeTypeWatch === 'bull_call_spread' ? 'e.g. 510 (further OTM call)'
+                                : 'e.g. 490 (further OTM put)'
+                              }
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
+
+                  {/* Live spread stats preview */}
+                  {isSpread && watchedValues.strikePrice && watchedValues.shortStrike && watchedValues.entryPrice && (
+                    (() => {
+                      const width = Math.abs((watchedValues.shortStrike ?? 0) - (watchedValues.strikePrice ?? 0));
+                      const credit = watchedValues.entryPrice;
+                      const qty = watchedValues.quantity || 1;
+                      const isSTO = selectedStrategy.openTx === 'STO';
+                      const maxP = isSTO ? credit * qty * 100 : (width - credit) * qty * 100;
+                      const maxL = isSTO ? (width - credit) * qty * 100 : credit * qty * 100;
+                      return (
+                        <div className="rounded-lg border border-blue-700/50 bg-blue-950/20 p-3 space-y-1 text-xs">
+                          <p className="font-semibold text-blue-300 text-sm">Spread Analysis</p>
+                          <div className="grid grid-cols-3 gap-2 pt-1">
+                            <div className="text-center">
+                              <p className="text-muted-foreground">Width</p>
+                              <p className="font-bold text-foreground">${width.toFixed(0)}</p>
+                            </div>
+                            <div className="text-center">
+                              <p className="text-muted-foreground">Max Profit</p>
+                              <p className="font-bold text-emerald-400">+${maxP.toFixed(0)}</p>
+                            </div>
+                            <div className="text-center">
+                              <p className="text-muted-foreground">Max Loss</p>
+                              <p className="font-bold text-red-400">-${maxL.toFixed(0)}</p>
+                            </div>
+                          </div>
+                          <p className="text-muted-foreground pt-1">
+                            Risk/Reward: {(maxL / (maxP || 1)).toFixed(1)}:1 · Capital at Risk: ${maxL.toFixed(0)}
+                          </p>
+                        </div>
+                      );
+                    })()
+                  )}
+
                   <FormField
                     control={form.control}
                     name="entryPrice"
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          {selectedStrategy.openTx === 'STO' ? 'Premium Received (credit)' : 'Entry Price'}
+                          {selectedStrategy.openTx === 'STO' ? 'Net Credit Received' : 'Entry Price / Debit Paid'}
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -619,7 +695,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                             {...field}
                             value={field.value || ""}
                             onChange={(e) => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))}
-                            placeholder={selectedStrategy.openTx === 'STO' ? 'e.g. 1.50' : 'Entry price'}
+                            placeholder={selectedStrategy.openTx === 'STO' ? 'e.g. 1.50 (total credit)' : 'e.g. 2.00 (total debit)'}
                           />
                         </FormControl>
                         <FormMessage />
@@ -1148,13 +1224,48 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
 
                             {/* Trade Details */}
                             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                              <div><span className="text-muted-foreground">Strike: </span><span className="font-medium">${trade.strikePrice}</span></div>
+                              {(trade as any).tradeType !== 'stock' && trade.strikePrice && (
+                                <div>
+                                  <span className="text-muted-foreground">
+                                    {(trade as any).shortStrike ? 'Long Strike: ' : 'Strike: '}
+                                  </span>
+                                  <span className="font-medium">${trade.strikePrice}</span>
+                                </div>
+                              )}
+                              {(trade as any).shortStrike && (
+                                <div><span className="text-muted-foreground">Short Strike: </span><span className="font-medium">${(trade as any).shortStrike}</span></div>
+                              )}
                               <div><span className="text-muted-foreground">Qty: </span><span className="font-medium">{trade.quantity}</span></div>
-                              <div><span className="text-muted-foreground">Entry: </span><span className="font-medium">${trade.entryPrice}</span></div>
+                              <div>
+                                <span className="text-muted-foreground">{(trade as any).openTx === 'STO' ? 'Credit: ' : 'Entry: '}</span>
+                                <span className="font-medium">${trade.entryPrice}</span>
+                              </div>
                               {!isOpen && trade.exitPrice && (
-                                <div><span className="text-muted-foreground">Exit: </span><span className="font-medium">${trade.exitPrice}</span></div>
+                                <div><span className="text-muted-foreground">Close: </span><span className="font-medium">${trade.exitPrice}</span></div>
                               )}
                             </div>
+
+                            {/* Spread stats panel — shown when maxProfit/maxLoss stored */}
+                            {((trade as any).maxProfit != null || (trade as any).maxLoss != null) && (
+                              <div className="rounded-md border border-blue-700/40 bg-blue-950/20 p-2 grid grid-cols-3 gap-2 text-xs text-center">
+                                <div>
+                                  <p className="text-muted-foreground">Width</p>
+                                  <p className="font-bold text-foreground">
+                                    ${trade.strikePrice && (trade as any).shortStrike
+                                      ? Math.abs((trade as any).shortStrike - trade.strikePrice).toFixed(0)
+                                      : '—'}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-muted-foreground">Max Profit</p>
+                                  <p className="font-bold text-emerald-400">+${((trade as any).maxProfit ?? 0).toFixed(0)}</p>
+                                </div>
+                                <div>
+                                  <p className="text-muted-foreground">Max Loss / Risk</p>
+                                  <p className="font-bold text-red-400">-${((trade as any).maxLoss ?? 0).toFixed(0)}</p>
+                                </div>
+                              </div>
+                            )}
 
                             {/* Time */}
                             <div className="flex items-center gap-4 text-xs text-muted-foreground">

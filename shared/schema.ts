@@ -41,6 +41,9 @@ export const trades = pgTable("trades", {
   tradeDate: timestamp("trade_date").notNull(),
   status: text("status").default("closed"), // 'open' | 'closed' | 'rolled'
   campaignId: text("campaign_id"), // UUID linking rolled legs into a campaign
+  shortStrike: real("short_strike"),  // spreads only: the strike being sold (short leg)
+  maxProfit: real("max_profit"),       // computed: max $ gain on spread
+  maxLoss: real("max_loss"),           // computed: max $ loss on spread / capital at risk
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -167,6 +170,9 @@ export const insertTradeSchema = createInsertSchema(trades).omit({
   tradeType: z.string().optional().default("long_call"),
   openTx: z.enum(["BTO", "STO"]).optional().default("BTO"),
   campaignId: z.string().optional().nullable(),
+  shortStrike: z.coerce.number().optional().nullable(),
+  maxProfit: z.coerce.number().optional().nullable(),
+  maxLoss: z.coerce.number().optional().nullable(),
 });
 
 
