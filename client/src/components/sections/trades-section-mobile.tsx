@@ -21,6 +21,14 @@ import type { Trade, PlaybookStrategy } from "@shared/schema";
 import { format } from "date-fns";
 import BulkTradeUpload from "@/components/bulk-trade-upload";
 
+// Strike direction rules per spread type
+const SPREAD_STRIKE_RULES: Record<string, { valid: (long: number, short: number) => boolean; message: string }> = {
+  bear_put_spread:  { valid: (l, s) => l > s,  message: "Your Long Put Strike must be GREATER than your Short Put Strike for a PUT DEBIT SPREAD." },
+  bull_call_spread: { valid: (l, s) => l < s,  message: "Your Long Call Strike must be LESS than your Short Call Strike for a CALL DEBIT SPREAD." },
+  bull_put_spread:  { valid: (l, s) => s > l,  message: "Your Short Put Strike must be GREATER than your Long Put Strike for a BULL PUT CREDIT SPREAD." },
+  bear_call_spread: { valid: (l, s) => s < l,  message: "Your Short Call Strike must be LESS than your Long Call Strike for a BEAR CALL CREDIT SPREAD." },
+};
+
 const tradeFormSchema = z.object({
   ticker: z.string().min(1, "Ticker is required"),
   tradeType: z.string().default("long_call"),
@@ -28,15 +36,26 @@ const tradeFormSchema = z.object({
   strikePrice: z.coerce.number().min(0, "Strike price must be positive").optional(),
   shortStrike: z.coerce.number().min(0, "Short strike must be positive").optional(),
   entryPrice: z.coerce.number().min(0, "Entry price must be positive"),
-  isOpen: z.boolean().default(false),
-  exitPrice: z.coerce.number().min(0, "Exit price must be positive").optional(),
   entryTime: z.string().min(1, "Entry time is required"),
-  exitTime: z.string().optional(),
   expirationDate: z.string().optional(),
   entryReason: z.string().optional(),
-  exitReason: z.string().optional(),
+  exitReason: z.string().optional(),   // kept for edit mode only
+  exitPrice: z.coerce.number().min(0).optional(), // kept for edit mode only
+  exitTime: z.string().optional(),               // kept for edit mode only
+  isOpen: z.boolean().default(true),             // always true for new trades; kept for edit compatibility
   playbookId: z.coerce.number().optional(),
   tradeDate: z.string().min(1, "Trade date is required"),
+}).superRefine((data, ctx) => {
+  const rule = SPREAD_STRIKE_RULES[data.tradeType];
+  if (!rule) return; // not a spread — no validation needed
+  if (data.strikePrice == null || data.shortStrike == null) return; // incomplete — let required validators handle
+  if (!rule.valid(data.strikePrice, data.shortStrike)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: rule.message,
+      path: ["shortStrike"],
+    });
+  }
 });
 
 
@@ -99,7 +118,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
       strikePrice: undefined,
       shortStrike: undefined,
       entryPrice: undefined,
-      isOpen: false,
+      isOpen: true,
       exitPrice: undefined,
       entryTime: getCurrentCSTTime(),
       exitTime: "",
@@ -167,7 +186,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
         strikePrice: undefined,
         shortStrike: undefined,
         entryPrice: undefined,
-        isOpen: false,
+        isOpen: true,
         exitPrice: undefined,
         entryTime: getCurrentCSTTime(),
         exitTime: "",
@@ -238,7 +257,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
         strikePrice: undefined,
         shortStrike: undefined,
         entryPrice: undefined,
-        isOpen: false,
+        isOpen: true,
         exitPrice: undefined,
         entryTime: getCurrentCSTTime(),
         exitTime: "",
@@ -381,7 +400,7 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
       strikePrice: undefined,
       shortStrike: undefined,
       entryPrice: undefined,
-      isOpen: false,
+      isOpen: true,
       exitPrice: undefined,
       entryTime: getCurrentCSTTime(),
       exitTime: "",
@@ -703,55 +722,40 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                     )}
                   />
 
-                  {/* Trade Status Toggle */}
-                  <FormField
-                    control={form.control}
-                    name="isOpen"
-                    render={({ field }) => (
-                      <FormItem className="flex flex-row items-center gap-3 rounded-lg border border-border p-3 bg-muted/30">
-                        <FormControl>
-                          <input
-                            type="checkbox"
-                            checked={field.value}
-                            onChange={field.onChange}
-                            className="h-4 w-4 accent-primary"
-                            id="isOpen"
-                          />
-                        </FormControl>
-                        <div>
-                          <label htmlFor="isOpen" className="text-sm font-medium cursor-pointer">
-                            Trade is still open (no exit yet)
-                          </label>
-                          <p className="text-xs text-muted-foreground">Check this if you haven't closed the position yet</p>
-                        </div>
-                      </FormItem>
-                    )}
-                  />
 
-                  {/* Exit Price — only shown when trade is closed */}
-                  {!isOpenWatch && (
-                    <FormField
-                      control={form.control}
-                      name="exitPrice"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>
-                            {selectedStrategy.openTx === 'STO' ? 'Close Price (debit to close)' : 'Exit Price'}
-                          </FormLabel>
-                          <FormControl>
-                            <Input
-                              type="number"
-                              step="0.01"
-                              {...field}
-                              value={field.value || ""}
-                              onChange={(e) => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))}
-                              placeholder={selectedStrategy.openTx === 'STO' ? 'e.g. 0.10' : 'Exit price'}
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
+                  {/* Exit correction — shown only when editing an already-closed trade */}
+                  {editingTrade && editingTrade.exitPrice && (
+                    <div className="rounded-lg border border-amber-700/50 bg-amber-950/20 p-3 space-y-3">
+                      <p className="text-xs font-semibold text-amber-400 uppercase tracking-wide">Correct Exit Data</p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <FormField
+                          control={form.control}
+                          name="exitPrice"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel className="text-xs">Close Price</FormLabel>
+                              <FormControl>
+                                <Input type="number" step="0.01" {...field} value={field.value || ""} onChange={(e) => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={form.control}
+                          name="exitTime"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel className="text-xs">Close Time</FormLabel>
+                              <FormControl>
+                                <Input type="time" {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      </div>
+                    </div>
                   )}
 
                   {/* Expiration Date — hidden for stock */}
@@ -784,23 +788,6 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                       </FormItem>
                     )}
                   />
-
-                  {/* Exit Time — only shown when trade is closed */}
-                  {!isOpenWatch && (
-                    <FormField
-                      control={form.control}
-                      name="exitTime"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Exit Time (Optional)</FormLabel>
-                          <FormControl>
-                            <Input type="time" {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  )}
                 </div>
 
                 {/* Strategy Selection */}
@@ -870,43 +857,11 @@ export default function TradesSectionMobile({ onNavigateToAnalysis }: TradesSect
                   )}
                 </div>
 
-                {/* Exit Reason */}
-                <FormField
-                  control={form.control}
-                  name="exitReason"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Exit Reason</FormLabel>
-                      <FormControl>
-                        <Textarea 
-                          placeholder="Explain why you exited this trade"
-                          className="min-h-[80px]"
-                          {...field}
-                          value={field.value || ""}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                {/* P&L and Time Classification Preview */}
-                {(timeClassification || calculatedPnL !== null) && (
-                  <div className="border rounded-lg p-3 bg-muted/50 space-y-2">
-                    {timeClassification && (
-                      <div className="text-sm">
-                        <span className="text-muted-foreground">Time Classification: </span>
-                        <span className="font-medium text-primary">{timeClassification}</span>
-                      </div>
-                    )}
-                    {calculatedPnL !== null && (
-                      <div className="text-sm">
-                        <span className="text-muted-foreground">P&L: </span>
-                        <span className={`font-medium ${calculatedPnL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                          {calculatedPnL >= 0 ? '+' : ''}${calculatedPnL.toFixed(2)}
-                        </span>
-                      </div>
-                    )}
+                {/* Time Classification hint */}
+                {timeClassification && (
+                  <div className="border rounded-lg p-3 bg-muted/50 flex items-center gap-2 text-sm">
+                    <span className="text-muted-foreground">Time Window:</span>
+                    <span className="font-medium text-primary">{timeClassification}</span>
                   </div>
                 )}
 
