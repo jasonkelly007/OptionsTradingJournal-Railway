@@ -16,21 +16,16 @@ type SectionType = 'premarket' | 'trades' | 'analysis' | 'playbook' | 'performan
 
 export default function Dashboard() {
   const [activeSection, setActiveSection] = useState<SectionType>('premarket');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [isMobile, setIsMobile] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 1024);
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 1024);
 
   // Handle responsive behavior
   useEffect(() => {
     const handleResize = () => {
       const mobile = window.innerWidth < 1024;
       setIsMobile(mobile);
-      // Auto-collapse sidebar on mobile
-      if (mobile) {
-        setSidebarCollapsed(true);
-      }
     };
 
-    handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
